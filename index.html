@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="JARVIS">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0b1220">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<title>JARVIS</title>
+<style>
+:root{--bg:#0b1220;--card:#131c2e;--fg:#e6edf7;--mut:#8a98b3;--ac:#35c2ff;--ok:#3ddc97;--bad:#ff6b6b}
+@media (prefers-color-scheme:light){:root{--bg:#f3f6fb;--card:#fff;--fg:#0f1a2e;--mut:#5b6b88;--ac:#0a7cc4}}
+*{box-sizing:border-box}html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font:16px/1.4 -apple-system,system-ui,Segoe UI,Roboto,sans-serif;display:flex;flex-direction:column;padding-top:env(safe-area-inset-top)}
+header{padding:10px 16px;font-weight:700;letter-spacing:.2em;color:var(--ac);display:flex;justify-content:space-between;align-items:center}
+header small{letter-spacing:0;font-weight:400;color:var(--mut);font-size:12px}
+main{flex:1;overflow:auto;padding:0 12px 12px}
+nav{display:flex;border-top:1px solid #8884;padding-bottom:env(safe-area-inset-bottom);background:var(--card)}
+nav button{flex:1;padding:12px 0;background:none;border:0;color:var(--mut);font-size:12px}
+nav button.on{color:var(--ac);font-weight:700}
+.card{background:var(--card);border-radius:12px;padding:12px;margin:8px 0}
+.msg{margin:6px 0;padding:8px 12px;border-radius:12px;max-width:90%;white-space:pre-wrap}
+.u{background:var(--ac);color:#04121f;margin-left:auto}.a{background:var(--card)}
+.bar{display:flex;gap:8px;padding:8px 12px}
+input,textarea,select{flex:1;background:var(--card);color:var(--fg);border:1px solid #8885;border-radius:10px;padding:10px;font-size:16px;min-width:0}
+button.p{background:var(--ac);color:#04121f;border:0;border-radius:10px;padding:10px 14px;font-weight:700}
+button.g{background:none;border:1px solid #8885;color:var(--fg);border-radius:10px;padding:8px 12px}
+.row{display:flex;align-items:center;gap:8px;padding:6px 0}.row span{flex:1}.done span{text-decoration:line-through;color:var(--mut)}
+h3{margin:14px 4px 4px;font-size:13px;color:var(--mut);text-transform:uppercase;letter-spacing:.1em}
+.mut{color:var(--mut);font-size:13px}
+</style>
+</head>
+<body>
+<header>JARVIS <small id="status">offline-ready · local only</small></header>
+<main id="main"></main>
+<div class="bar" id="bar"><input id="inp" placeholder="Talk to JARVIS… (try: help)" autocomplete="off"><button class="g" id="mic" title="Voice command">🎤</button><button class="p" id="send">Send</button></div>
+<nav id="nav"></nav>
+<script>
+"use strict";
+const KEY="jarvis_v1";
+let S={tasks:[],projects:[],notes:[],chat:[],cfg:{endpoint:"",model:"Qwen2.5-0.5B-Instruct-q4f16_1-MLC"},n:1};
+try{const r=localStorage.getItem(KEY);if(r)S=Object.assign(S,JSON.parse(r))}catch(e){}
+const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){status("Storage full or blocked")}};
+if(navigator.storage&&navigator.storage.persist)navigator.storage.persist().catch(()=>{});
+let tab="chat",engine=null,loading=false;
+const $=s=>document.querySelector(s),esc=t=>String(t).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+function status(t){$("#status").textContent=t}
+const id=()=>S.n++;
+
+// ---- Built-in command engine: works with NO AI model at all ----
+function projByName(n){n=n.toLowerCase();return S.projects.find(p=>p.name.toLowerCase()===n)}
+function command(t){
+  let m;
+  if(/^help$/i.test(t))return "Commands (work without any AI model):\n• add task <text> [to <project>]\n• done <task #> / delete task <#>\n• new project <name> / delete project <#>\n• remember <fact> / forget <#>\n• list tasks | list projects | list notes\nAnything else goes to the AI model if you've enabled one in Settings.";
+  if(m=t.match(/^add task (.+?)(?: to (?:project )?(.+))?$/i)){let p=null;if(m[2]){p=projByName(m[2]);if(!p){p={id:id(),name:m[2].trim()};S.projects.push(p)}}
+    S.tasks.push({id:id(),title:m[1].trim(),pid:p?p.id:null,done:false,at:Date.now()});save();render();return "Task added"+(p?" to "+p.name:"")+"."}
+  if(m=t.match(/^(?:done|complete) (?:task )?#?(\d+)$/i)){const k=S.tasks.find(x=>x.id==m[1]);if(!k)return "No task #"+m[1];k.done=true;save();render();return "Completed: "+k.title}
+  if(m=t.match(/^delete task #?(\d+)$/i)){S.tasks=S.tasks.filter(x=>x.id!=m[1]);save();render();return "Deleted."}
+  if(m=t.match(/^new project (.+)$/i)){S.projects.push({id:id(),name:m[1].trim()});save();render();return "Project created."}
+  if(m=t.match(/^delete project #?(\d+)$/i)){S.projects=S.projects.filter(x=>x.id!=m[1]);S.tasks.forEach(k=>{if(k.pid==m[1])k.pid=null});save();render();return "Project deleted."}
+  if(m=t.match(/^remember (.+)$/i)){S.notes.push({id:id(),text:m[1].trim(),at:Date.now()});save();render();return "Stored in memory."}
+  if(m=t.match(/^forget #?(\d+)$/i)){S.notes=S.notes.filter(x=>x.id!=m[1]);save();render();return "Forgotten."}
+  if(/^list tasks$/i.test(t))return S.tasks.length?S.tasks.map(k=>`#${k.id} [${k.done?"x":" "}] ${k.title}`).join("\n"):"No tasks.";
+  if(/^list projects$/i.test(t))return S.projects.length?S.projects.map(p=>`#${p.id} ${p.name}`).join("\n"):"No projects.";
+  if(/^list notes$/i.test(t))return S.notes.length?S.notes.map(p=>`#${p.id} ${p.text}`).join("\n"):"No notes.";
+  return null;
+}
+
+// ---- AI: local only (in-browser WebGPU model, or your own computer's Ollama) ----
+function ctx(){return "You are JARVIS, a concise personal assistant running locally on the user's device. You have NO internet access and must say so if asked for current information; never invent facts.\nTasks: "+JSON.stringify(S.tasks.filter(k=>!k.done).map(k=>k.title))+"\nProjects: "+JSON.stringify(S.projects.map(p=>p.name))+"\nMemory: "+JSON.stringify(S.notes.map(n=>n.text))}
+async function ask(q){
+  const msgs=[{role:"system",content:ctx()},...S.chat.slice(-8).map(m=>({role:m.r,content:m.t})),{role:"user",content:q}];
+  if(S.cfg.endpoint){const r=await fetch(S.cfg.endpoint.replace(/\/$/,"")+"/v1/chat/completions",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:S.cfg.model,messages:msgs})});const j=await r.json();return j.choices[0].message.content}
+  if(engine){const r=await engine.chat.completions.create({messages:msgs,max_tokens:400});return r.choices[0].message.content}
+  return "No AI model is enabled yet. Built-in commands still work (type help). To add AI, open Settings and enable the on-device model (needs a WebGPU-capable browser) or point JARVIS at Ollama on your own computer.";
+}
+async function enableLocal(){
+  if(!navigator.gpu){alert("This browser has no WebGPU, so the on-device model can't run here. Use the Ollama option on your own computer instead. Built-in commands still work.");return}
+  if(loading)return;loading=true;
+  try{
+    const w=await import("https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.79/+esm");
+    engine=await w.CreateMLCEngine(S.cfg.model,{initProgressCallback:p=>status(Math.round((p.progress||0)*100)+"% "+(p.text||"").slice(0,40))});
+    status("AI ready · on-device");
+  }catch(e){status("AI failed to load");alert("Could not load the model: "+e.message+"\nThe first load needs internet to download the model once (free); after that it is cached on the device.")}
+  loading=false;
+}
+
+// ---- Voice + meeting recording: all local (Whisper via transformers.js, audio in IndexedDB) ----
+const db=new Promise((res,rej)=>{const r=indexedDB.open("jarvis_audio",1);r.onupgradeneeded=()=>r.result.createObjectStore("rec",{keyPath:"id"});r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)});
+const dbp=(m,f)=>db.then(d=>new Promise((res,rej)=>{const t=d.transaction("rec",m),q=f(t.objectStore("rec"));t.oncomplete=()=>res(q.result);t.onerror=()=>rej(t.error)}));
+const recPut=r=>dbp("readwrite",s=>s.put(r)),recAll=()=>dbp("readonly",s=>s.getAll()),recDel=i=>dbp("readwrite",s=>s.delete(i));
+const fmt=s=>{s=Math.round(s);return Math.floor(s/60)+":"+String(s%60).padStart(2,"0")};
+let asr=null,stream=null,vr=null,M=null,wl=null,tick=null,RECS=[];
+async function getAsr(){
+  if(asr)return asr;
+  const T=await import("https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.3.3/+esm");
+  asr=await T.pipeline("automatic-speech-recognition","Xenova/whisper-tiny.en",{progress_callback:p=>{if(p.status==="progress")status("Speech model "+Math.round(p.progress)+"%")}});
+  status("Speech model ready");return asr}
+async function pcm(blob){
+  const ab=await blob.arrayBuffer(),C=window.AudioContext||window.webkitAudioContext,c=new C();
+  const b=await new Promise((res,rej)=>c.decodeAudioData(ab,res,rej));c.close();
+  const o=new OfflineAudioContext(1,Math.ceil(b.duration*16000),16000),src=o.createBufferSource();
+  src.buffer=b;src.connect(o.destination);src.start();
+  return (await o.startRendering()).getChannelData(0)}
+async function stt(blob){const a=await getAsr();const r=await a(await pcm(blob),{chunk_length_s:30,stride_length_s:5});return (r.text||"").replace(/\[.*?\]|\(.*?\)/g,"").trim()}
+async function mic(){if(!stream||!stream.active)stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}});return stream}
+function releaseMic(){if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}}
+function mkRec(s,onStop){const mt=MediaRecorder.isTypeSupported("audio/mp4")?"audio/mp4":"audio/webm",ch=[],r=new MediaRecorder(s,{mimeType:mt});r.ondataavailable=e=>e.data.size&&ch.push(e.data);r.onstop=()=>onStop(new Blob(ch,{type:mt}));r.start();return r}
+const NUM="one two three four five six seven eight nine ten".split(" ");
+async function voice(){
+  const b=$("#mic");
+  if(vr){vr.stop();vr=null;b.textContent="🎤";return}
+  if(M){alert("A meeting is being recorded. Stop it first.");return}
+  try{const s=await mic();b.textContent="⏹";
+    vr=mkRec(s,async blob=>{releaseMic();status("transcribing…");
+      try{let t=await stt(blob);
+        t=t.replace(/^jarvis[,.!:\s]*/i,"").replace(/[.!?,\s]+$/,"").replace(/\b(done|complete|forget|delete task|delete project) (one|two|three|four|five|six|seven|eight|nine|ten)\b/i,(m,a,w)=>a+" "+(NUM.indexOf(w.toLowerCase())+1));
+        status("offline-ready · local only");
+        if(t){$("#inp").value=t;send()}else status("Heard nothing");
+      }catch(e){status("Voice failed");alert("Voice failed: "+e.message+"\nThe first use needs internet once to download the speech model.")}});
+  }catch(e){alert("Microphone unavailable: "+e.message)}}
+async function loadRecs(){try{RECS=await recAll()}catch(e){RECS=[]}render()}
+async function transcribeRec(r){
+  const tx=[];
+  for(let i=0;i<r.segs.length;i++){status(`Transcribing ${i+1}/${r.segs.length}`);
+    try{tx.push(await stt(r.segs[i]))}catch(e){tx.push("[unreadable segment]")}
+    r.transcript=tx.join(" ");await recPut(r).catch(()=>{});if(tab==="meetings")render()}
+  status("Transcript ready")}
+async function meetStart(){
+  if(vr){alert("Finish the voice command first.");return}
+  try{
+    const s=await mic();try{wl=await navigator.wakeLock.request("screen")}catch(e){}
+    const rec={id:Date.now(),title:"Meeting "+new Date().toLocaleString(),at:Date.now(),segs:[],dur:0,transcript:""};
+    M={rec,on:true,t0:Date.now()};
+    const seg=()=>{try{M.r=mkRec(s,async blob=>{rec.segs.push(blob);rec.dur=Math.round((Date.now()-M.t0)/1000);await recPut(rec).catch(()=>{});if(M.on)seg();else meetDone()});
+      M.timer=setTimeout(()=>{try{M.r.stop()}catch(e){}},60000)}catch(e){M.on=false;meetDone()}};
+    seg();tick=setInterval(()=>{const e=$("#clk");if(e&&M)e.textContent="● Recording "+fmt((Date.now()-M.t0)/1000)},1000);render();
+  }catch(e){alert("Microphone unavailable: "+e.message)}}
+function meetStop(){if(!M)return;M.on=false;clearTimeout(M.timer);try{M.r.stop()}catch(e){meetDone()}}
+async function meetDone(){
+  const rec=M.rec;M=null;clearInterval(tick);releaseMic();try{wl&&wl.release()}catch(e){}
+  if(!rec.segs.length){status("Nothing recorded");render();return}
+  RECS=RECS.filter(x=>x.id!==rec.id);RECS.push(rec);render();await transcribeRec(rec)}
+document.addEventListener("visibilitychange",()=>{if(document.hidden&&M&&M.r&&M.r.state==="recording"){clearTimeout(M.timer);try{M.r.stop()}catch(e){}}});
+const gr=i=>RECS.find(x=>x.id===i);
+const tr=i=>transcribeRec(gr(i));
+async function sum(i){const r=gr(i);if(!engine&&!S.cfg.endpoint){alert("Enable an AI model in Settings first.");return}
+  if(!r.transcript){alert("Transcribe first.");return}
+  status("summarizing…");try{r.summary=await ask("Summarize this meeting transcript in 5 bullets, then list action items:\n"+r.transcript.slice(0,6000));await recPut(r)}catch(e){alert(e.message)}
+  status(engine?"AI ready · on-device":"offline-ready · local only");render()}
+const rmem=i=>{const r=gr(i);S.notes.push({id:id(),text:(r.title+": "+(r.summary||r.transcript)).slice(0,600),at:Date.now()});save();status("Saved to memory")};
+function dl(i){const r=gr(i);r.segs.forEach((b,k)=>setTimeout(()=>{const a=document.createElement("a");a.href=URL.createObjectURL(b);a.download=r.title.replace(/[^\w-]+/g,"_")+"-part"+(k+1)+(b.type.includes("mp4")?".m4a":".webm");a.click()},k*700))}
+const rd=async i=>{if(confirm("Delete this recording?")){await recDel(i).catch(()=>{});loadRecs()}};
+
+// ---- UI ----
+async function send(){
+  const t=$("#inp").value.trim();if(!t)return;$("#inp").value="";tab="chat";
+  S.chat.push({r:"user",t});render();
+  let a=command(t);
+  if(a===null){status("thinking…");try{a=await ask(t)}catch(e){a="AI error: "+e.message}status(engine?"AI ready · on-device":"offline-ready · local only")}
+  S.chat.push({r:"assistant",t:a});S.chat=S.chat.slice(-100);save();render();
+}
+function render(){
+  document.querySelectorAll("#nav button").forEach(b=>b.classList.toggle("on",b.dataset.t===tab));
+  $("#bar").style.display=tab==="chat"?"flex":"none";
+  const m=$("#main");let h="";
+  if(tab==="chat"){h=S.chat.length?S.chat.map(c=>`<div class="msg ${c.r==="user"?"u":"a"}">${esc(c.t)}</div>`).join(""):'<p class="mut">Hello. Type <b>help</b> to see what I can do without any AI model.</p>'}
+  if(tab==="tasks"){
+    const grp=[{name:"No project",id:null},...S.projects];
+    h=grp.map(p=>{const ts=S.tasks.filter(k=>(k.pid||null)===p.id);return ts.length?`<h3>${esc(p.name)}</h3><div class="card">${ts.map(k=>`<div class="row ${k.done?"done":""}"><input type="checkbox" style="flex:0" ${k.done?"checked":""} onchange="tg(${k.id})"><span>${esc(k.title)} <i class="mut">#${k.id}</i></span><button class="g" onclick="dt(${k.id})">✕</button></div>`).join("")}</div>`:""}).join("")||'<p class="mut">No tasks yet. Use the chat: <i>add task Buy milk to Home</i></p>'}
+  if(tab==="projects")h=S.projects.map(p=>`<div class="card row"><span>${esc(p.name)} <i class="mut">#${p.id} · ${S.tasks.filter(k=>k.pid===p.id&&!k.done).length} open</i></span><button class="g" onclick="dp(${p.id})">✕</button></div>`).join("")||'<p class="mut">No projects yet.</p>';
+  if(tab==="meetings")h=`<div class="card">${M?`<b id="clk" style="color:var(--bad)">● Recording ${fmt((Date.now()-M.t0)/1000)}</b><p class="mut">Keep this screen on and JARVIS open. iOS stops recording if you lock the phone or switch apps.</p><button class="p" onclick="meetStop()">Stop &amp; transcribe</button>`:`<button class="p" onclick="meetStart()">● Start recording</button><p class="mut">Audio stays on this device. Tell participants you are recording; consent rules vary by place.</p>`}</div>`+[...RECS].sort((a,b)=>b.at-a.at).map(r=>`<div class="card"><b>${esc(r.title)}</b> <span class="mut">${fmt(r.dur||0)}</span><p style="white-space:pre-wrap">${esc(r.transcript||"(not transcribed yet)")}</p>${r.summary?`<p><b>Summary</b><br>${esc(r.summary)}</p>`:""}<button class="g" onclick="tr(${r.id})">Transcribe</button> <button class="g" onclick="sum(${r.id})">Summarize</button> <button class="g" onclick="rmem(${r.id})">To memory</button> <button class="g" onclick="dl(${r.id})">Audio</button> <button class="g" onclick="rd(${r.id})">✕</button></div>`).join("");
+  if(tab==="memory")h=S.notes.map(n=>`<div class="card row"><span>${esc(n.text)} <i class="mut">#${n.id}</i></span><button class="g" onclick="dn(${n.id})">✕</button></div>`).join("")||'<p class="mut">Nothing stored. Try: <i>remember my passport expires in 2028</i></p>';
+  if(tab==="settings")h=`<div class="card"><b>On-device AI</b><p class="mut">Free, open-weight model running in your browser via WebGPU. One-time download of a few hundred MB, then cached. Needs a recent iPhone/iOS with WebGPU and enough free memory; speed and quality are limited (small model).</p><button class="p" onclick="enableLocal()">Enable on-device AI</button></div>
+  <div class="card"><b>Your own computer (optional)</b><p class="mut">Run Ollama (free, open source) on a PC/Mac you own and enter its address, e.g. http://192.168.1.20:11434 . Browsers may block http from an https page; use JARVIS from a local server on the same network if so.</p><input id="ep" placeholder="Ollama address" value="${esc(S.cfg.endpoint)}"><input id="md" style="margin-top:8px" placeholder="Model name" value="${esc(S.cfg.model)}"><br><br><button class="g" onclick="sc()">Save</button></div>
+  <div class="card"><b>Your data</b><p class="mut">Stored only on this device. Clearing Safari website data deletes it, so export regularly.</p><button class="p" onclick="ex()">Export JSON</button> <button class="g" onclick="$('#imp').click()">Import</button><input type="file" id="imp" accept=".json" hidden onchange="im(this)"></div>
+  <div class="card"><b>Limits</b><p class="mut">No internet research: the assistant cannot look things up and will say so. Small local models make mistakes. No background tasks or system-wide iPhone automation from a web app.</p></div>`;
+  m.innerHTML=h;if(tab==="chat")m.scrollTop=m.scrollHeight;
+}
+const tg=i=>{const k=S.tasks.find(x=>x.id===i);k.done=!k.done;save();render()};
+const dt=i=>{S.tasks=S.tasks.filter(x=>x.id!==i);save();render()};
+const dp=i=>{S.projects=S.projects.filter(x=>x.id!==i);S.tasks.forEach(k=>{if(k.pid===i)k.pid=null});save();render()};
+const dn=i=>{S.notes=S.notes.filter(x=>x.id!==i);save();render()};
+const sc=()=>{S.cfg.endpoint=$("#ep").value.trim();S.cfg.model=$("#md").value.trim()||S.cfg.model;save();status("Settings saved")};
+async function ex(){const R=await recAll().catch(()=>[]);const b=new Blob([JSON.stringify({...S,meetings:R.map(({segs,...r})=>r)},null,2)],{type:"application/json"});const a=document.createElement("a");a.href=URL.createObjectURL(b);a.download="jarvis-export.json";a.click()}
+function im(f){const r=new FileReader();r.onload=()=>{try{S=Object.assign(S,JSON.parse(r.result));delete S.meetings;save();render();status("Imported")}catch(e){alert("Invalid file")}};r.readAsText(f.files[0])}
+$("#nav").innerHTML=[["chat","Chat"],["tasks","Tasks"],["projects","Projects"],["meetings","Meetings"],["memory","Memory"],["settings","Settings"]].map(([k,v])=>`<button data-t="${k}">${v}</button>`).join("");
+$("#nav").onclick=e=>{if(e.target.dataset.t){tab=e.target.dataset.t;render();if(tab==="meetings")loadRecs()}};
+$("#send").onclick=send;$("#mic").onclick=voice;$("#inp").onkeydown=e=>{if(e.key==="Enter")send()};
+if("serviceWorker"in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});
+render();
+</script>
+</body>
+</html>
